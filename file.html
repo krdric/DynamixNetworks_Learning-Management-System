@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Learning Management System</title>
+  <style>
+    /* ====== Basic reset & layout ====== */
+    :root{--accent:#2563eb;--muted:#6b7280;--bg:#f8fafc}
+    *{box-sizing:border-box}
+    body{font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial; margin:0;background:var(--bg); color:#0f172a}
+    .container{max-width:1100px;margin:28px auto;padding:20px}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+    h1{font-size:20px;margin:0}
+    button{cursor:pointer}
+
+    /* ====== Auth card ====== */
+    .card{background:white;border-radius:12px;padding:20px;box-shadow:0 6px 18px rgba(2,6,23,0.06)}
+    .auth{display:flex;gap:20px}
+    .auth .col{flex:1}
+    label{display:block;font-size:13px;margin:10px 0 6px;color:var(--muted)}
+    input,textarea,select{width:100%;padding:10px;border:1px solid #e6eef8;border-radius:8px;font-size:14px}
+    .muted{color:var(--muted);font-size:13px}
+
+    /* ====== Nav ====== */
+    nav{display:flex;gap:8px;align-items:center}
+    .pill{background:#eef2ff;color:var(--accent);padding:8px 12px;border-radius:999px;font-weight:600}
+    .small{font-size:13px}
+
+    /* ====== Grid ====== */
+    .grid{display:grid;grid-template-columns:260px 1fr;gap:18px}
+    .sidebar{min-height:420px}
+    .menu{display:flex;flex-direction:column;gap:6px}
+    .menu button{background:transparent;border:0;text-align:left;padding:10px;border-radius:8px}
+    .menu button.active{background:#eef2ff;color:var(--accent);font-weight:600}
+
+    /* ====== Course cards ====== */
+    .courses{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+    .course{background:white;padding:14px;border-radius:10px;box-shadow:0 4px 10px rgba(2,6,23,0.04)}
+    .course h3{margin:0 0 6px;font-size:16px}
+    .course p{margin:0 0 10px;color:var(--muted);font-size:14px}
+    .course .meta{display:flex;justify-content:space-between;align-items:center}
+
+    /* ====== Progress bar ====== */
+    .progress-wrap{height:10px;background:#eef2ff;border-radius:999px;overflow:hidden}
+    .progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),#7c3aed);width:0}
+    .right{margin-left:auto}
+
+    /* ====== Table ====== */
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px 6px;text-align:left;border-bottom:1px solid #eef2ff}
+
+    /* ====== responsive ====== */
+    @media (max-width:880px){.grid{grid-template-columns:1fr} .sidebar{order:2}}
+
+    /* ====== tiny helpers ====== */
+    .row{display:flex;gap:8px;align-items:center}
+    .sep{height:1px;background:#eef2ff;margin:12px 0;border-radius:4px}
+    .link{color:var(--accent);cursor:pointer;text-decoration:underline}
+    .danger{color:#dc2626}
+    .sm{font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Learning Management System</h1>
+      <nav>
+        <div class="muted small">Client-side</div>
+        <div style="width:12px"></div>
+        <div class="pill" id="userBadge">Not signed in</div>
+      </nav>
+    </header>
+
+    <main>
+      <div id="appRoot"></div>
+    </main>
+  </div>
+
+  <script>
+  // ====== Simple client-side LMS single-file app ======
+  // Features: Registration & Login, Dashboard, Course management (admin), Enroll, Track lesson completion & progress, Profile edit
+  // Storage: localStorage (users and courses)
+  // NOTE: This is client-side auth is NOT secure for production.
+
+  ;(function(){
+    // Utilities
+    const $ = (s, el=document)=> el.querySelector(s)
+    const $$ = (s, el=document)=> Array.from(el.querySelectorAll(s))
+
+    // Async hashing for password (SHA-256) -> hex
+    async function hashStr(str){
+      const enc = new TextEncoder();
+      const data = enc.encode(str);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2,'0')).join('');
+    }
+
+    // Storage helpers
+    const STORAGE_USERS = 'lms_users_v1'
+    const STORAGE_COURSES = 'lms_courses_v1'
+    const STORAGE_SESSION = 'lms_session_v1'
+
+    function loadUsers(){
+      try{ return JSON.parse(localStorage.getItem(STORAGE_USERS)||'{}') }catch(e){return {}}
+    }
+    function saveUsers(u){ localStorage.setItem(STORAGE_USERS, JSON.stringify(u)) }
+    function loadCourses(){
+      try{ return JSON.parse(localStorage.getItem(STORAGE_COURSES)||'[]') }catch(e){return []}
+    }
+    function saveCourses(c){ localStorage.setItem(STORAGE_COURSES, JSON.stringify(c)) }
+    function saveSession(email){ localStorage.setItem(STORAGE_SESSION, JSON.stringify({email})) }
+    function loadSession(){ try{ return JSON.parse(localStorage.getItem(STORAGE_SESSION)||'null') }catch(e){return null} }
+    function clearSession(){ localStorage.removeItem(STORAGE_SESSION) }
+
+    // Seed sample data if empty
+    (async function seed(){
+      let users = loadUsers();
+      if(!Object.keys(users).length){
+        const adminPass = await hashStr('admin123');
+        const userPass = await hashStr('student123');
+        users['admin@example.com'] = {name:'Admin', email:'admin@example.com', password:adminPass, isAdmin:true, progress:{}};
+        users['ric@example.com'] = {name:'Ric', email:'ric@example.com', password:userPass, isAdmin:false, progress:{}};
+        saveUsers(users);
+      }
+      let courses = loadCourses();
+      if(courses.length===0){
+        courses = [
+          {id:'c-js-basics',title:'JavaScript Basics',desc:'Introduction to JS, variables, functions and DOM.',lessons:[{id:'l1',title:'Intro'},{id:'l2',title:'Variables'},{id:'l3',title:'Functions'},{id:'l4',title:'DOM Basics'}]},
+          {id:'c-html-css',title:'HTML & CSS',desc:'Core HTML elements and responsive CSS.',lessons:[{id:'l1',title:'HTML Intro'},{id:'l2',title:'CSS Selectors'},{id:'l3',title:'Layout'}]},
+        ];
+        saveCourses(courses);
+      }
+    })();
+
+    // Router / UI state
+    let state = {view:'auth', user:null} // views: auth, dashboard, courses, course, profile, manage
+
+    // Render root
+    async function render(){
+      const root = document.getElementById('appRoot');
+      const session = loadSession();
+      const users = loadUsers();
+      state.user = session && session.email && users[session.email] ? users[session.email] : null;
+      $('#userBadge').textContent = state.user ? state.user.name : 'Not signed in';
+
+      if(!state.user){ // show auth
+        root.innerHTML = authUI();
+        attachAuthHandlers();
+        return;
+      }
+
+      // signed in, show main app layout
+      root.innerHTML = mainLayout();
+      attachNavHandlers();
+      showDashboard();
+    }
+
+    // ====== UI fragments ======
+    function authUI(){
+      return `
+      <div class="auth">
+        <div class="card col">
+          <h2 style="margin:0 0 8px">Sign in</h2>
+          <label>Email</label>
+          <input id="signinEmail" placeholder="you@example.com" />
+          <label>Password</label>
+          <input id="signinPass" type="password" />
+          <div style="height:10px"></div>
+          <div class="row">
+            <button id="btnSignIn" class="pill">Sign in</button>
+            <button id="btnToRegister" class="sm">Create account</button>
+          </div>
+          <div class="sep"></div>
+          <div class="muted sm">Sample accounts seeded: admin@example.com / admin123  and ric@example.com / student123</div>
+        </div>
+
+        <div class="card col">
+          <h2 style="margin:0 0 8px">Create account</h2>
+          <label>Full name</label>
+          <input id="regName" placeholder="Your name" />
+          <label>Email</label>
+          <input id="regEmail" placeholder="you@example.com" />
+          <label>Password</label>
+          <input id="regPass" type="password" />
+          <label><input type="checkbox" id="regAdmin" /> Register as admin</label>
+          <div style="height:10px"></div>
+          <button id="btnRegister" class="pill">Create account</button>
+        </div>
+      </div>
+      `
+    }
+
+    function mainLayout(){
+      return `
+      <div class="grid">
+        <aside class="sidebar">
+          <div class="card">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="width:44px;height:44px;border-radius:12px;background:linear-gradient(90deg,#60a5fa,#7c3aed);display:flex;align-items:center;justify-content:center;color:white;font-weight:700">${state.user.name.split(' ').map(s=>s[0]).slice(0,2).join('')}</div>
+              <div>
+                <div style="font-weight:700">${state.user.name}</div>
+                <div class="muted sm">${state.user.email}</div>
+              </div>
+            </div>
+            <div class="sep"></div>
+            <div class="menu">
+              <button data-view="dashboard" class="active">Dashboard</button>
+              <button data-view="courses">All Courses</button>
+              <button data-view="profile">Profile</button>
+              ${state.user.isAdmin ? '<button data-view="manage">Course Management</button>' : ''}
+              <button id="btnSignOut" class="danger small">Sign out</button>
+            </div>
+          </div>
+        </aside>
+        <section>
+          <div id="mainContent"></div>
+        </section>
+      </div>
+      `
+    }
+
+    // ====== Attach handlers ======
+    function attachAuthHandlers(){
+      $('#btnSignIn').onclick = async ()=>{
+        const email = $('#signinEmail').value.trim().toLowerCase();
+        const pass = $('#signinPass').value;
+        if(!email || !pass){ alert('fill both fields'); return }
+        const users = loadUsers();
+        if(!users[email]){ alert('no account found'); return }
+        const hash = await hashStr(pass);
+        if(hash !== users[email].password){ alert('wrong password'); return }
+        saveSession(email); state.view='dashboard'; render();
+      }
+
+      $('#btnRegister').onclick = async ()=>{
+        const name = $('#regName').value.trim();
+        const email = $('#regEmail').value.trim().toLowerCase();
+        const pass = $('#regPass').value;
+        const isAdmin = $('#regAdmin').checked;
+        if(!name||!email||!pass){ alert('fill all fields'); return }
+        const users = loadUsers();
+        if(users[email]){ alert('account exists'); return }
+        const hash = await hashStr(pass);
+        users[email] = {name, email, password:hash, isAdmin:isAdmin, progress:{}};
+        saveUsers(users);
+        saveSession(email); render();
+      }
+
+      $('#btnToRegister').onclick = ()=>{ const el = $('#regName'); if(el){ el.focus() } }
+    }
+
+    function attachNavHandlers(){
+      $$('.menu button').forEach(b=> b.onclick = (e)=>{
+        $$('.menu button').forEach(x=>x.classList.remove('active'));
+        e.currentTarget.classList.add('active');
+        state.view = e.currentTarget.dataset.view;
+        if(state.view === 'dashboard') showDashboard();
+        if(state.view === 'courses') showAllCourses();
+        if(state.view === 'profile') showProfile();
+        if(state.view === 'manage') showManage();
+      });
+
+      $('#btnSignOut').onclick = ()=>{ clearSession(); state.user=null; state.view='auth'; render(); }
+    }
+
+    // ====== Pages ======
+    function showDashboard(){
+      const users = loadUsers();
+      const courses = loadCourses();
+      const me = users[state.user.email];
+      const enrolled = courses.filter(c => me.progress && me.progress[c.id]);
+      const main = document.getElementById('mainContent');
+      main.innerHTML = `
+        <div class="card">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <h2 style="margin:0">Dashboard</h2>
+            <div class="muted">Welcome back, ${me.name.split(' ')[0]}</div>
+          </div>
+          <div class="sep"></div>
+          <h3 class="sm">Your courses</h3>
+          <div style="margin-top:12px">
+            ${enrolled.length ? enrolled.map(c=>renderCourseTile(c, me)).join('') : '<div class="muted">You are not enrolled in any course yet. Explore courses to enroll.</div>'}
+          </div>
+        </div>
+      `
+      // attach enroll/view handlers
+      $$('.course button').forEach(btn=> btn.onclick = (e)=>{
+        const action = e.currentTarget.dataset.action;
+        const cid = e.currentTarget.dataset.course;
+        if(action==='view') openCourse(cid);
+      });
+    }
+
+    function renderCourseTile(c, me){
+      const prog = (me.progress && me.progress[c.id] && me.progress[c.id].completedLessons) ? ((me.progress[c.id].completedLessons.length / c.lessons.length)*100) : 0;
+      return `
+      <div class="course">
+        <h3>${escapeHtml(c.title)}</h3>
+        <p>${escapeHtml(c.desc)}</p>
+        <div class="meta">
+          <div style="width:60%">
+            <div class="progress-wrap"><div class="progress-fill" style="width:${prog}%"></div></div>
+            <div class="muted sm" style="margin-top:6px">${Math.round(prog)}% complete</div>
+          </div>
+          <div class="right">
+            <button data-action="view" data-course="${c.id}" class="pill">Open</button>
+          </div>
+        </div>
+      </div>
+      `
+    }
+
+    function showAllCourses(){
+      const courses = loadCourses();
+      const users = loadUsers();
+      const me = users[state.user.email];
+      const main = document.getElementById('mainContent');
+      main.innerHTML = `
+        <div class="card">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <h2 style="margin:0">All courses</h2>
+            <div><button id="btnCreateCourse" class="small">Create new course</button></div>
+          </div>
+          <div class="sep"></div>
+          <div class="courses">
+            ${courses.map(c=>`
+              <div class="course">
+                <h3>${escapeHtml(c.title)}</h3>
+                <p>${escapeHtml(c.desc)}</p>
+                <div class="meta">
+                  <div class="muted sm">${c.lessons.length} lessons</div>
+                  <div class="right">
+                    <button data-course="${c.id}" class="small" data-action="open">Open</button>
+                    <button data-course="${c.id}" class="small" data-action="${me.progress && me.progress[c.id] ? 'unenroll' : 'enroll'}">${me.progress && me.progress[c.id] ? 'Unenroll' : 'Enroll'}</button>
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `
+
+      $('#btnCreateCourse').onclick = ()=> showCreateCourseModal();
+      $$('.course button').forEach(b=> b.onclick = (e)=>{
+        const cid = e.currentTarget.dataset.course;
+        const act = e.currentTarget.dataset.action;
+        if(act==='open') openCourse(cid);
+        if(act==='enroll') enrollCourse(cid);
+        if(act==='unenroll') unenrollCourse(cid);
+      })
+    }
+
+    function showProfile(){
+      const users = loadUsers();
+      const me = users[state.user.email];
+      const main = document.getElementById('mainContent');
+      main.innerHTML = `
+        <div class="card">
+          <h2>Profile</h2>
+          <div class="sep"></div>
+          <label>Full name</label>
+          <input id="profileName" value="${escapeHtml(me.name)}" />
+          <label>Email (cannot change)</label>
+          <input value="${escapeHtml(me.email)}" disabled />
+          <label>New password (leave blank to keep)</label>
+          <input id="profilePass" type="password" />
+          <div style="height:10px"></div>
+          <button id="btnSaveProfile" class="pill">Save profile</button>
+        </div>
+      `
+      $('#btnSaveProfile').onclick = async ()=>{
+        const name = $('#profileName').value.trim();
+        const pass = $('#profilePass').value;
+        if(!name){ alert('name required'); return }
+        const users = loadUsers();
+        const me = users[state.user.email];
+        me.name = name;
+        if(pass){ me.password = await hashStr(pass) }
+        users[me.email]=me; saveUsers(users);
+        state.user = me; $('#userBadge').textContent = me.name; alert('saved')
+      }
+    }
+
+    function showManage(){
+      if(!state.user.isAdmin){ alert('only admin'); return }
+      const courses = loadCourses();
+      const main = document.getElementById('mainContent');
+      main.innerHTML = `
+        <div class="card">
+          <h2>Course management</h2>
+          <div class="sep"></div>
+          <table>
+            <thead><tr><th>Title</th><th>Lessons</th><th></th></tr></thead>
+            <tbody>
+              ${courses.map(c=>`<tr><td>${escapeHtml(c.title)}</td><td>${c.lessons.length}</td><td><button data-course="${c.id}" data-action="edit">Edit</button> <button data-course="${c.id}" data-action="delete" class="danger">Delete</button></td></tr>`).join('')}
+            </tbody>
+          </table>
+          <div style="height:12px"></div>
+          <button id="btnNewCourse" class="pill">Create course</button>
+        </div>
+      `
+      $$('#mainContent button').forEach(b=> b.onclick = (e)=>{
+        const act = e.currentTarget.dataset.action;
+        const cid = e.currentTarget.dataset.course;
+        if(act==='edit') showEditCourseModal(cid);
+        if(act==='delete') deleteCourse(cid);
+      })
+      $('#btnNewCourse').onclick = ()=> showCreateCourseModal();
+
+    }
+
+    // ====== Course actions ======
+    function enrollCourse(id){
+      const users = loadUsers();
+      const me = users[state.user.email];
+      if(!me.progress) me.progress = {};
+      if(me.progress[id]){ alert('already enrolled'); return }
+      me.progress[id] = {enrolledAt: new Date().toISOString(), completedLessons: []};
+      users[me.email]=me; saveUsers(users); render();
+    }
+    function unenrollCourse(id){
+      const users = loadUsers();
+      const me = users[state.user.email];
+      if(me.progress && me.progress[id]){ delete me.progress[id]; users[me.email]=me; saveUsers(users); render(); }
+    }
+
+    function openCourse(id){
+      const courses = loadCourses();
+      const course = courses.find(c=>c.id===id);
+      if(!course){ alert('course not found'); return }
+      const users = loadUsers();
+      const me = users[state.user.email];
+      const prog = me.progress && me.progress[id] ? me.progress[id] : {completedLessons: []};
+      const main = document.getElementById('mainContent');
+      main.innerHTML = `
+        <div class="card">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <h2 style="margin:0">${escapeHtml(course.title)}</h2>
+            <div><button id="btnBack" class="small">Back</button></div>
+          </div>
+          <div class="sep"></div>
+          <p class="muted">${escapeHtml(course.desc)}</p>
+          <div style="margin-top:12px">
+            <h3 class="sm">Lessons</h3>
+            <ol id="lessonsList">
+              ${course.lessons.map(l=>`<li style="margin:8px 0" data-lid="${l.id}"> <input type="checkbox" data-lid="${l.id}" ${prog.completedLessons && prog.completedLessons.includes(l.id) ? 'checked' : ''}/> ${escapeHtml(l.title)} </li>`).join('')}
+            </ol>
+            <div style="height:14px"></div>
+            <div class="muted sm">Progress: <span id="progressPct">0</span>%</div>
+          </div>
+        </div>
+      `
+      $('#btnBack').onclick = ()=> showAllCourses();
+      // attach check handlers
+      $$('#lessonsList input').forEach(cb=> cb.onchange = (e)=>{
+        toggleLesson(course.id, e.currentTarget.dataset.lid, e.currentTarget.checked);
+        updateCourseViewProgress(course.id);
+      });
+      updateCourseViewProgress(course.id);
+    }
+
+    function toggleLesson(courseId, lessonId, isChecked){
+      const users = loadUsers();
+      const me = users[state.user.email];
+      if(!me.progress) me.progress = {};
+      if(!me.progress[courseId]) me.progress[courseId] = {enrolledAt:new Date().toISOString(), completedLessons:[]};
+      const arr = me.progress[courseId].completedLessons || [];
+      if(isChecked){ if(!arr.includes(lessonId)) arr.push(lessonId); }
+      else{ const idx = arr.indexOf(lessonId); if(idx>=0) arr.splice(idx,1); }
+      me.progress[courseId].completedLessons = arr;
+      users[me.email]=me; saveUsers(users);
+    }
+
+    function updateCourseViewProgress(cid){
+      const users = loadUsers(); const me = users[state.user.email]; const courses = loadCourses(); const course = courses.find(c=>c.id===cid);
+      const comp = me.progress && me.progress[cid] && me.progress[cid].completedLessons ? me.progress[cid].completedLessons.length : 0;
+      const pct = Math.round((comp / course.lessons.length)*100);
+      const pf = document.getElementById('progressPct');
+      const fill = document.querySelector('.progress-fill');
+      if(pf) pf.textContent = pct;
+      if(fill) fill.style.width = pct+'%';
+    }
+
+    // ====== Course create/edit modals (simple prompt-based) ======
+    function showCreateCourseModal(){
+      if(!state.user.isAdmin){ alert('only admin'); return }
+      const title = prompt('Course title'); if(!title) return;
+      const desc = prompt('Short description')||'';
+      const lessonsRaw = prompt('Enter lesson titles separated by | (pipe) e.g. Intro|Lesson 2|Quiz')||'';
+      const lessons = lessonsRaw.split('|').map((t,i)=>({id:'l'+(i+1),title:t.trim()})).filter(x=>x.title);
+      const id = 'c-'+slugify(title);
+      const courses = loadCourses();
+      if(courses.find(c=>c.id===id)){ alert('a course with similar name exists'); return }
+      courses.push({id,title,desc,lessons}); saveCourses(courses); alert('course created'); showManage();
+    }
+
+    function showEditCourseModal(cid){
+      if(!state.user.isAdmin){ alert('only admin'); return }
+      const courses = loadCourses(); const course = courses.find(c=>c.id===cid); if(!course) return;
+      const title = prompt('Title', course.title); if(!title) return;
+      const desc = prompt('Description', course.desc)||'';
+      const lessonsRaw = prompt('Lessons (pipe-separated)', course.lessons.map(l=>l.title).join('|'))||'';
+      const lessons = lessonsRaw.split('|').map((t,i)=>({id:'l'+(i+1),title:t.trim()})).filter(x=>x.title);
+      course.title = title; course.desc=desc; course.lessons=lessons; saveCourses(courses); alert('saved'); showManage();
+    }
+
+    function deleteCourse(cid){
+      if(!state.user.isAdmin){ alert('only admin'); return }
+      if(!confirm('Delete course?')) return;
+      let courses = loadCourses(); courses = courses.filter(c=>c.id!==cid); saveCourses(courses);
+      // remove progress for course from all users
+      const users = loadUsers(); Object.keys(users).forEach(k=>{ if(users[k].progress && users[k].progress[cid]) delete users[k].progress[cid]; }); saveUsers(users);
+      showManage();
+    }
+
+    // ====== Helpers ======
+    function slugify(s){ return s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') }
+    function escapeHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
+
+    // initial render
+    render();
+  })()
+  </script>
+</body>
+</html>
